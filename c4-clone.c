@@ -209,34 +209,57 @@ next(){
                 return;
             }
             else if (token == '>'){
-
+                if (*position == '='){
+                    ++position;
+                    token = Ge;
+                }else if (*position == '>'){
+                    ++position;
+                    token = Shr;
+                }else token = Gt;
+                return ;
             }
             else if (token == '|'){
-
+                if (*position == '|'){
+                    ++position;
+                    token = Lor;
+                }else token = Or;
+                return ;
             }
             else if (token == '&'){
-
+                if (*position == '&'){
+                    ++position;
+                    token = Lan;
+                }else token = And;
+                return;
             }
             else if (token == '^'){
-
+                token = Xor;
+                return;
             }
             else if (token == '%'){
-
+                token = Mod;
+                return;   
             }
             else if (token == '*'){
-
+                token = Mul;
+                return;
             }
             else if (token == '['){
-
+                token = Brak;
+                return;
             }
             else if (token == '?'){
-
+                token = Cond;
+                return;
             }
-            else if (token == '-' || token == ';' || token == '{' || token == '}' || token == )
+            else if (token == '-' || token == ';' || token == '{' || 
+                     token == '}' || token == '(' || token == ')' || 
+                     token == ']' || token == ',' || token == ':'){
+
+                return;
+            }
         }
-
     }
-
 }
 
 
