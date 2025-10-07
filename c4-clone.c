@@ -6,7 +6,6 @@
 
 #define long long int
 
-
 char * position, *last_position,            // Current Position in source code
      * data;                                // data/bss pointer
 
@@ -55,6 +54,17 @@ enum {CHAR, INT, PTR};
     Symbol[i][Val]      = 5;
 */
 
+
+// 这 10 个枚举常量，定义了“结构体字段在数组中的偏移量”。
+// 1. Tk    : Token 类型 (i.e. id, int , return)
+// 2. Hash  : Hash Value, used to compare symbol name (i.e. hash value of main)
+// 3. Name  : Name of the symbol
+// 4. Class : The type of the Symbol : (i.e. 局部变量(Loc), 全局变量 (Glo), 函数 (Fun), 系统调用 (Sys))
+// 5. Type  : 数据类型：CHAR、INT、PTR 等
+// 6. Val   : 1. 变量是内存偏移量 , 2. 函数是地址
+// 7. HClass, HType, HVal: 保存“旧的”Class/Type/Val，用于在函数定义结束时恢复符号表（作用域回退）: 保存临时值
+// 8. Idsz  : 表示每个 symbol entry 的大小（9）: 用于跳表
+
 enum {TK, Hash, Name, Class, Type, Val, HClass, HType, HVal, Idsz};
 
 
@@ -88,7 +98,7 @@ next(){
             }else if (token == "#"){
                 while (*position != 0 && *position != '\n') ++position;
             }
-            // ! 2. Parse Charcater (Variable Name || Function Name)
+            // ! 2. Parse Character (Variable Name || Function Name)
             else if ((token >= 'a' && token <= 'z') || (token >= 'A' && token <= 'Z') || token == '_'){
                 pp = position - 1;
 
@@ -263,4 +273,256 @@ next(){
 }
 
 
-// 2. 
+// 2. Expression Parser 
+void expr(int lev){
+    int t, *d;
+    if (!token){
+        printf("%d: Unexpeected eof in expression", line);
+        exit(-1);
+    }
+    else if (token == Num){
+        *++emit_position = IMM;
+        *++emit_position = token_value;
+        next();
+        expression_type = INT;
+    }
+    else if (token == '"'){
+        /* 
+        * printf("hi"); -------> IMM  0x1000   ; 字符串 "hi" 的地址
+        */
+        *++emit_position = IMM;
+        *++emit_position = token_value;
+        next();
+        // ! Why here seems strange : Since in C , this is allowed --> "Hello""World""Elton"
+        while (token == '"'){
+            next();
+            // ! Align data to 4 字节边界
+            data = (char *) ((int) data + sizeof(int) & - ~(sizeof(int)));
+            expression_type = PTR;
+        }
+    }
+
+    // ! 关键字是统一靠符号表实现的 -> inserted in main() 
+    else if (token == Sizeof){
+        next();
+        if (token == '('){
+            next();
+        }else{
+            printf("%d : Open paraen expected in sizeof\n", line);
+            exit(-1);
+        }
+        expression_type = INT;
+        if (token == Int) next();
+        else if (token == Char){
+            next();
+            token = Char;
+        }
+        // 处理“类型声明中的指针层级”
+        // sizeof (int*) sizeof(char *)
+        // 用来记录当前类型的指针层级
+        while (token == Mul){
+            next();
+            expression_type = expression_type + PTR;
+        }
+        if (token == ')')
+            next();
+        else {
+            printf("%d: Close paren expected in sizeof\n", line);
+            exit(-1);
+        }
+        *++emit_position = IMM;
+        *++emit_position = (expression_type == CHAR) ? sizeof(char) : sizeof(int);
+        expression_type = INT;
+    }
+    else if (token == Id){
+        d = identifier;
+        next();
+        if (token == '('){
+            next();
+            t = 0;                      // 参数计数器
+            while (token != ')'){       
+                expr(Assign);           // 解析一个表达式（即一个参数）
+                *++emit_position = PSH;             // 把表达式结果压栈
+                ++t;                    // 参数计数+1
+                if (tk == ',')          // 如果有逗号，说明后面还有参数
+                    next();             // 继续解析下一个参数
+            }
+            next();                     // 跳过右括号 ')'
+            if (d[Class] == Sys)
+                *++emit_position = d[Val];
+            else if (d[Class] == Fun)
+                *++emit_position = JSR;
+            else {
+                printf("%d: Bad Function Call\n", line);
+                exit(-1);
+            }
+
+            if (t){
+                *++emit_position = ADJ; // 调整堆栈，因为参数已被压入
+                *++emit_position = t;
+            }
+            expression_type = d[Type];
+        }
+
+        else if (d[Class] == Num){
+            *++emit_position = IMM;
+            *++emit_position = d[Val];
+            expression_type = INT;
+        }else {
+            if (d[Class] == Loc){
+                *++emit_position = LEA;
+                *++emit_position = loc- d[Val];
+            }else if (d[Class] == Glo){
+                *++emit_position = IMM;
+                *++emit_position = d[Val];
+            } else {
+                printf("%d: Undefined variable\n", line);
+                exit(-1);
+            }
+        }
+    }
+    else if (token == '('){
+        next();
+        // ! The type of the value inside the parenthesis
+        if (token == Int || token == Char){
+            t = (token == Int) ? INT : CHAR;
+            next();
+        }
+        // ! Inside the parenthesis is a Pointer
+        while (token == Mul){
+            next();
+            t = t + PTR;
+        }
+        if (token == ')'){
+            next();
+        }else {
+            printf("%d: Close paren expected\n", line);
+            exit(-1);
+        }
+    }
+    // ! Deferencing Logic
+    else if (token == Mul){
+        next();
+        expr(Inc);
+        if (expression_type > INT){
+            expression_type = expression_type - PTR;
+        }else {
+            printf("%d: Bad dereference\n", line);
+            exit(-1);
+        }
+        *++emit_position = (expression_type == CHAR) ? LC : LI;
+    }
+    // ! Retrieve address 
+    else if (token == And){
+        next();
+        expr(Inc);
+        // Cancel the LC and LI instruction
+        if (*emit_position == LC || *emit_position == LI) --emit_position;
+        else{
+            printf("%d: Bad Address-of\n", line);
+            exit(-1);
+        }
+        expression_type = expression_type + PTR;
+    }
+    else if (token == '!'){
+        next();                      // 跳过 `!`
+        expr(Inc);                   // 解析 `x`
+        *++emit_position = PSH;      // 压入 x 的值
+        *++emit_position = IMM;      // 加载 0
+        *++emit_position = 0;
+        *++emit_position = EQ;       // 比较 x == 0？ 是就返回 1，否则返回 0
+        expression_type  = INT;
+    }
+    else if (token == '~'){
+        next();
+        expr(Inc);
+        *++emit_position = PSH;
+        *++emit_position = IMM;
+        *++emit_position = -1;
+        *++emit_position = XOR;      // x ^ -1 就是 ~x
+        expression_type  = INT;
+    }
+    else if (token == Add){
+        next();
+        expr(Inc);
+        expression_type = INT;
+    }
+    else if (token == Sub){
+        next();
+        *++emit_position = IMM;
+
+        // 1. ! Handle "-10"
+        if (token == Num){
+            *++emit_position = -token_value;
+            next();
+        }
+        // 2. ! Handle "-a"
+        else{
+            *++emit_position = -1;
+            *++emit_position = PSH;
+            expr(Inc);
+            *++emit_position = MUL; 
+        }
+        expression_type = INT;
+    }
+    // ! Handle x++ ++x x-- --x
+    // ☑️ 栈上的计算指令
+    // ☑️ 写回内存的指令
+    // ❌ 不决定语义（前缀还是后缀）
+    else if (token == Inc || token == Dec){
+        t = token;
+        next();
+        expr(Inc);
+        // ! Here handle the variable
+        if (*emit_position == LC){
+            *emit_position   = PSH;
+            *++emit_position = LC;
+        }else if (*emit_position == LI){
+            *emit_position   = PSH;
+            *++emit_position = LI;
+        }else {
+            printf("%d: Bad lvalue in pre-increment\n", line);
+            exit(-1);
+        }
+        *++emit_position = PSH;
+        *++emit_position = IMM;
+        // ! 如果变量是普通类型（int or char），就加/减 1
+        // ! 如果变量是指针类型（如 int*），加/减一个指针跨度（比如 sizeof(int)）
+        *++emit_position = (expression_type > PTR) ? sizeof(int) : sizeof(char);
+        *++emit_position = (t == Inc) ? ADD : SUB;
+        // ! 这是把新值写回变量的指令 store Char or store Integer
+        *++emit_position = (expression_type == CHAR) ? SC : SI;
+    } 
+    else {
+        printf("%d: Bad Expression\n", line);
+        exit(-1);
+    }
+
+    while (token >= lev){
+        t = expression_type;
+
+        if (token == Assign){
+            next();
+            // When we parse LHS, it would be either an int or an char 
+            // Therefore LI or LC will be there, but we dont want to load that int or char actually
+            // We want the address of the variable
+            // SO : If the last instruction is a load
+            // REplace it with a Push address so the variable address is on the stack
+
+            if (*expression_type == LC || *expression_type == LI){
+                *expression_type = PSH;
+            }
+            else {
+                printf("%d: Bad lvalue in assignment\n", line);
+                exit(-1);
+            }
+            // Recursively parse the RHS
+            expr(Assign);
+            *++expression_type = ((ty=token) == CHAR) ? SC : SI;
+        }else if (token == Cond){
+            next();
+        }
+
+    }
+
+}
